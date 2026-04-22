@@ -22,7 +22,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "usbd_cdc_if.h"
+#include "usbd_cdc.h"
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -50,7 +52,7 @@ TIM_HandleTypeDef htim4;
 TIM_HandleTypeDef htim5;
 
 /* USER CODE BEGIN PV */
-
+uint32_t usbSendStartTick = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -68,8 +70,17 @@ static void MX_ADC1_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-#define CCDBuffer 6000
+#define CCDBuffer 3694
+#define USBFrameSize (2 + CCDBuffer * 2)
+
 volatile uint16_t CCDPixelBuffer[CCDBuffer];
+
+volatile uint8_t frameReady = 0;
+volatile uint8_t usbSending = 0;
+
+uint8_t USBFrame[USBFrameSize];
+
+extern USBD_HandleTypeDef hUsbDeviceFS;
 /* USER CODE END 0 */
 
 /**
@@ -108,15 +119,10 @@ int main(void)
   MX_USB_DEVICE_Init();
   MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1); 	//ICG    //PA0
-  __HAL_TIM_SET_COUNTER(&htim2, 66);	//600 ns delay
-  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);	//fM	//PA6
-
+  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);	//ICG    //PA0
   HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_4);	//ADC
-
+  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);	//fM	//PA6
   HAL_TIM_PWM_Start(&htim5, TIM_CHANNEL_3);	//SH  //PA2
-
-  HAL_ADC_Start_DMA(&hadc1, (uint32_t*) CCDPixelBuffer, CCDBuffer);
 
   /* USER CODE END 2 */
 
@@ -124,6 +130,32 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+      USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef*)hUsbDeviceFS.pClassData;
+
+      if (frameReady && !usbSending)
+      {
+          frameReady = 0;
+
+          USBFrame[0] = 0x55;
+          USBFrame[1] = 0xAA;
+          memcpy(&USBFrame[2], (uint8_t*)CCDPixelBuffer, CCDBuffer * sizeof(uint16_t));
+
+          if (CDC_Transmit_FS(USBFrame, USBFrameSize) == USBD_OK)
+          {
+              usbSending = 1;
+              usbSendStartTick = HAL_GetTick();
+          }
+          else
+          {
+              frameReady = 1;
+          }
+      }
+
+      if (usbSending && (hcdc == NULL || hcdc->TxState == 0 ||
+          (HAL_GetTick() - usbSendStartTick) > 100))
+      {
+          usbSending = 0;
+      }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -208,7 +240,7 @@ static void MX_ADC1_Init(void)
   hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIGCONV_T4_CC4;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc1.Init.NbrOfConversion = 1;
-  hadc1.Init.DMAContinuousRequests = ENABLE;
+  hadc1.Init.DMAContinuousRequests = DISABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
   {
@@ -252,7 +284,7 @@ static void MX_TIM2_Init(void)
   htim2.Instance = TIM2;
   htim2.Init.Prescaler = 0;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 630000-1;
+  htim2.Init.Period = 840000-1;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
@@ -283,7 +315,7 @@ static void MX_TIM2_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN TIM2_Init 2 */
-
+  __HAL_TIM_ENABLE_IT(&htim2, TIM_IT_UPDATE);
   /* USER CODE END TIM2_Init 2 */
   HAL_TIM_MspPostInit(&htim2);
 
@@ -327,8 +359,8 @@ static void MX_TIM3_Init(void)
   {
     Error_Handler();
   }
-  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_UPDATE;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_ENABLE;
   if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
   {
     Error_Handler();
@@ -342,7 +374,7 @@ static void MX_TIM3_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN TIM3_Init 2 */
-
+  __HAL_TIM_URS_ENABLE(&htim3);
   /* USER CODE END TIM3_Init 2 */
   HAL_TIM_MspPostInit(&htim3);
 
@@ -361,6 +393,7 @@ static void MX_TIM4_Init(void)
   /* USER CODE END TIM4_Init 0 */
 
   TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_SlaveConfigTypeDef sSlaveConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
   TIM_OC_InitTypeDef sConfigOC = {0};
 
@@ -386,14 +419,20 @@ static void MX_TIM4_Init(void)
   {
     Error_Handler();
   }
+  sSlaveConfig.SlaveMode = TIM_SLAVEMODE_TRIGGER;
+  sSlaveConfig.InputTrigger = TIM_TS_ITR2;
+  if (HAL_TIM_SlaveConfigSynchro(&htim4, &sSlaveConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
   sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
   if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig) != HAL_OK)
   {
     Error_Handler();
   }
-  sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 42-1;
+  sConfigOC.OCMode = TIM_OCMODE_PWM2;
+  sConfigOC.Pulse = 147;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
   if (HAL_TIM_PWM_ConfigChannel(&htim4, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
@@ -507,9 +546,24 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+    if (htim->Instance == TIM2 && !usbSending && !frameReady)
+    {
+        HAL_ADC_Start_DMA(&hadc1, (uint32_t*)CCDPixelBuffer, CCDBuffer);
+    }
+}
+
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
 {
-	CDC_Transmit_FS((uint8_t*)CCDPixelBuffer, CCDBuffer * sizeof(uint16_t));
+	//CDC_Transmit_FS((uint8_t*)CCDPixelBuffer, CCDBuffer * sizeof(uint16_t));
+
+    if (hadc->Instance == ADC1)
+    {
+        HAL_ADC_Stop_DMA(&hadc1);
+        frameReady = 1;
+    }
+
 }
 /* USER CODE END 4 */
 

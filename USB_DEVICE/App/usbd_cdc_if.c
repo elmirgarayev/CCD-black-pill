@@ -22,7 +22,7 @@
 #include "usbd_cdc_if.h"
 
 /* USER CODE BEGIN INCLUDE */
-
+#include "main.h"
 /* USER CODE END INCLUDE */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -261,6 +261,14 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
 static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
 {
   /* USER CODE BEGIN 6 */
+  if (*Len == 4 && Buf[0] == 0xAB && Buf[1] == 0x01)
+  {
+      uint16_t exposure_us = (uint16_t)(Buf[2] | (Buf[3] << 8));
+      if (exposure_us >= 10 && exposure_us <= 9900)
+      {
+          __HAL_TIM_SET_AUTORELOAD(&htim5, (uint32_t)exposure_us * 84 - 1);
+      }
+  }
   USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
   USBD_CDC_ReceivePacket(&hUsbDeviceFS);
   return (USBD_OK);
