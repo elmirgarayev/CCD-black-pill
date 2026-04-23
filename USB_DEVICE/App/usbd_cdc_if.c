@@ -94,7 +94,12 @@ uint8_t UserRxBufferFS[APP_RX_DATA_SIZE];
 uint8_t UserTxBufferFS[APP_TX_DATA_SIZE];
 
 /* USER CODE BEGIN PRIVATE_VARIABLES */
-
+static uint8_t cmdBuf[4];
+static uint8_t cmdIdx = 0;
+extern volatile uint8_t pendingAck;
+extern volatile uint8_t pendingExposureUpdate;
+extern volatile uint32_t newTim2Arr;
+extern volatile uint32_t newTim5Arr;
 /* USER CODE END PRIVATE_VARIABLES */
 
 /**
@@ -261,12 +266,32 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
 static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
 {
   /* USER CODE BEGIN 6 */
-  if (*Len == 4 && Buf[0] == 0xAB && Buf[1] == 0x01)
+  for (uint32_t i = 0; i < *Len; i++)
   {
-      uint16_t exposure_us = (uint16_t)(Buf[2] | (Buf[3] << 8));
-      if (exposure_us >= 10 && exposure_us <= 9900)
+      if (cmdIdx == 0 && Buf[i] == 0xAB)
       {
-          __HAL_TIM_SET_AUTORELOAD(&htim5, (uint32_t)exposure_us * 84 - 1);
+          cmdBuf[cmdIdx++] = Buf[i];
+      }
+      else if (cmdIdx > 0)
+      {
+          cmdBuf[cmdIdx++] = Buf[i];
+          if (cmdIdx == 4)
+          {
+              cmdIdx = 0;
+              if (cmdBuf[1] == 0x01)
+              {
+                  uint16_t exposure_us = (uint16_t)(cmdBuf[2] | (cmdBuf[3] << 8));
+                  if (exposure_us >= 10 && exposure_us <= 9900)
+                  {
+                      uint32_t n = (20000 + exposure_us - 1) / exposure_us;
+                      uint32_t icg_us = n * (uint32_t)exposure_us;
+                      newTim2Arr = icg_us * 84 - 1;
+                      newTim5Arr = (uint32_t)exposure_us * 84 - 1;
+                      pendingExposureUpdate = 1;
+                  }
+                  pendingAck = 1;
+              }
+          }
       }
   }
   USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);

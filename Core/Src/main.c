@@ -53,6 +53,10 @@ TIM_HandleTypeDef htim5;
 
 /* USER CODE BEGIN PV */
 uint32_t usbSendStartTick = 0;
+volatile uint8_t pendingAck = 0;
+volatile uint8_t pendingExposureUpdate = 0;
+volatile uint32_t newTim2Arr = 0;
+volatile uint32_t newTim5Arr = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -155,6 +159,13 @@ int main(void)
           (HAL_GetTick() - usbSendStartTick) > 100))
       {
           usbSending = 0;
+      }
+
+      if (pendingAck && hcdc != NULL && hcdc->TxState == 0)
+      {
+          pendingAck = 0;
+          static uint8_t ack = 0xAC;
+          CDC_Transmit_FS(&ack, 1);
       }
     /* USER CODE END WHILE */
 
@@ -548,9 +559,18 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-    if (htim->Instance == TIM2 && !usbSending && !frameReady)
+    if (htim->Instance == TIM2)
     {
-        HAL_ADC_Start_DMA(&hadc1, (uint32_t*)CCDPixelBuffer, CCDBuffer);
+        if (pendingExposureUpdate)
+        {
+            pendingExposureUpdate = 0;
+            __HAL_TIM_SET_AUTORELOAD(&htim2, newTim2Arr);
+            __HAL_TIM_SET_AUTORELOAD(&htim5, newTim5Arr);
+            if (htim5.Instance->CNT > newTim5Arr)
+                __HAL_TIM_SET_COUNTER(&htim5, 336);
+        }
+        if (!usbSending && !frameReady)
+            HAL_ADC_Start_DMA(&hadc1, (uint32_t*)CCDPixelBuffer, CCDBuffer);
     }
 }
 
